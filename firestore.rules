@@ -1,0 +1,84 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.enabled == true;
+    }
+    function owner(uid) { return signedIn() && request.auth.uid == uid; }
+    function requestedUnitMatches() {
+      let unit = get(/databases/$(database)/documents/units/$(request.resource.data.unitId));
+      return unit.data.name == request.resource.data.unitName
+        && unit.data.hourlyRate == request.resource.data.requestedRate
+        && unit.data.reserved == false
+        && unit.data.activeSessionId == null;
+    }
+
+    match /admins/{uid} {
+      allow get: if owner(uid);
+      allow list, create, update, delete: if false;
+    }
+    match /units/{unitId} {
+      allow get, list: if signedIn();
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+    match /settings/{settingId} {
+      allow get, list: if signedIn();
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+    match /users/{uid} {
+      allow get: if owner(uid) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if owner(uid)
+        && request.resource.data.keys().hasOnly(['name','createdAt'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 2
+        && request.resource.data.name.size() <= 50
+        && request.resource.data.createdAt is string;
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+    match /bookings/{bookingId} {
+      allow get, list: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly([
+          'userId','customerName','unitId','unitName','minutes',
+          'requestedRate','status','createdAt','updatedAt'
+        ])
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.customerName is string
+        && request.resource.data.customerName.size() <= 50
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && request.resource.data.customerName == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.name
+        && request.resource.data.status == 'pending'
+        && request.resource.data.unitId is string
+        && request.resource.data.unitName is string
+        && request.resource.data.minutes is int
+        && request.resource.data.minutes >= 1 && request.resource.data.minutes <= 1440
+        && request.resource.data.requestedRate is number
+        && request.resource.data.requestedRate >= 0
+        && request.resource.data.requestedRate <= 100000
+        && request.resource.data.createdAt is string
+        && request.resource.data.updatedAt is string
+        && requestedUnitMatches();
+      allow update: if isAdmin() || (
+        signedIn()
+        && resource.data.userId == request.auth.uid
+        && resource.data.status == 'pending'
+        && request.resource.data.status == 'cancelled'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updatedAt'])
+      );
+      allow delete: if false;
+    }
+    match /sessions/{sessionId} {
+      allow get, list: if isAdmin() || (signedIn() && resource.data.customerUid == request.auth.uid);
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+    match /{anything=**} { allow read, write: if false; }
+  }
+}
